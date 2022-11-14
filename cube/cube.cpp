@@ -45,6 +45,9 @@
 
 #include "linmath.h"
 
+#include "imgui.h"
+#include "imgui_impl_vulkan.h"
+
 #ifndef NDEBUG
 #define VERIFY(x) assert(x)
 #else
@@ -70,21 +73,6 @@ constexpr uint32_t FRAME_LAG = 2;
         exit(1);                     \
     } while (0)
 #endif
-
-// easier to use the C function for extension functions
-PFN_vkCreateDebugUtilsMessengerEXT pfnVkCreateDebugUtilsMessengerEXT;
-PFN_vkDestroyDebugUtilsMessengerEXT pfnVkDestroyDebugUtilsMessengerEXT;
-VKAPI_ATTR VkResult VKAPI_CALL vkCreateDebugUtilsMessengerEXT(VkInstance instance,
-                                                              const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
-                                                              const VkAllocationCallbacks *pAllocator,
-                                                              VkDebugUtilsMessengerEXT *pMessenger) {
-    return pfnVkCreateDebugUtilsMessengerEXT(instance, pCreateInfo, pAllocator, pMessenger);
-}
-
-VKAPI_ATTR void VKAPI_CALL vkDestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT messenger,
-                                                           VkAllocationCallbacks const *pAllocator) {
-    return pfnVkDestroyDebugUtilsMessengerEXT(instance, messenger, pAllocator);
-}
 
 struct texture_object {
     vk::Sampler sampler;
@@ -1271,11 +1259,6 @@ void Demo::init_vk() {
     inst = instance_result.value;
 
     if (use_debug_messenger) {
-        pfnVkCreateDebugUtilsMessengerEXT =
-            reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(inst.getProcAddr("vkCreateDebugUtilsMessengerEXT"));
-        pfnVkDestroyDebugUtilsMessengerEXT =
-            reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(inst.getProcAddr("vkDestroyDebugUtilsMessengerEXT"));
-        VERIFY(pfnVkCreateDebugUtilsMessengerEXT != nullptr && pfnVkDestroyDebugUtilsMessengerEXT != nullptr);
         auto create_debug_messenger_return = inst.createDebugUtilsMessengerEXT(debug_utils_create_info);
         VERIFY(create_debug_messenger_return.result == vk::Result::eSuccess);
         debug_messenger = create_debug_messenger_return.value;
