@@ -47,6 +47,7 @@
 
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
+#include "imgui_impl_osx.h"
 
 #ifndef NDEBUG
 #define VERIFY(x) assert(x)
@@ -216,7 +217,7 @@ struct Demo {
     void draw_build_cmd(const SwapchainImageResources &swapchain_image_resource);
     void prepare_init_cmd();
     void flush_init_cmd();
-    void init(int argc, char **argv);
+    void init(int argc, char **argv, NSView* view);
     void init_connection();
     void init_vk();
     void init_vk_swapchain();
@@ -228,6 +229,7 @@ struct Demo {
     void prepare_descriptor_pool();
     void prepare_descriptor_set();
     void prepare_framebuffers();
+    void prepare_imgui();
     vk::ShaderModule prepare_shader_module(const uint32_t *code, size_t size);
     vk::ShaderModule prepare_vs();
     vk::ShaderModule prepare_fs();
@@ -277,6 +279,8 @@ struct Demo {
     void run_display();
 #endif
 
+    NSView* view;
+    
     std::string name = "vkcubepp";  // Name to put on the window/icon
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
     HINSTANCE connection = nullptr;  // hInstance - Windows Instance
@@ -371,6 +375,8 @@ struct Demo {
         vk::DeviceMemory mem;
         vk::DescriptorBufferInfo buffer_info;
     } uniform_data;
+
+    VkDescriptorPool imgui_DescriptorPool;
 
     vk::CommandBuffer cmd;  // Buffer for initialization commands
     vk::PipelineLayout pipeline_layout;
@@ -665,6 +671,8 @@ void Demo::draw() {
     } while (acquire_result != vk::Result::eSuccess);
 
     update_data_buffer();
+    
+    draw_build_cmd(swapchain_image_resources[current_buffer]);
 
     // Wait for the image acquired semaphore to be signaled to ensure
     // that the image won't be rendered to until the presentation
@@ -765,6 +773,18 @@ void Demo::draw_build_cmd(const SwapchainImageResources &swapchain_image_resourc
 
     commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D{}, vk::Extent2D(width, height)));
     commandBuffer.draw(12 * 3, 1, 0, 0);
+
+    ImGui_ImplOSX_NewFrame(view);
+    ImGui::NewFrame();
+    
+    ImGui::Begin("Test");
+    ImGui::Text("Hello, world!");
+    ImGui::End();
+    
+    ImGui::Render();
+    ImDrawData* draw_data = ImGui::GetDrawData();
+    ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
+
     // Note that ending the renderpass changes the image's layout from
     // COLOR_ATTACHMENT_OPTIMAL to PRESENT_SRC_KHR
     commandBuffer.endRenderPass();
@@ -835,7 +855,9 @@ void Demo::flush_init_cmd() {
     device.destroyFence(fence);
 }
 
-void Demo::init(int argc, char **argv) {
+void Demo::init(int argc, char **argv, NSView* view) {
+    this->view = view;
+
     vec3 eye = {0.0f, 3.0f, 5.0f};
     vec3 origin = {0, 0, 0};
     vec3 up = {0.0f, 1.0f, 0.0};
@@ -1554,9 +1576,9 @@ void Demo::prepare() {
 
     prepare_framebuffers();
 
-    for (const auto &swapchain_image_resource : swapchain_image_resources) {
-        draw_build_cmd(swapchain_image_resource);
-    }
+    prepare_imgui();
+
+    // imgui requires that we don't prerecord command buffers
 
     /*
      * Prepare functions above may generate pipeline commands
@@ -1566,6 +1588,8 @@ void Demo::prepare() {
     if (staging_texture.buffer) {
         destroy_texture(staging_texture);
     }
+
+    ImGui_ImplVulkan_DestroyFontUploadObjects();
 
     current_buffer = 0;
     prepared = true;
@@ -1917,6 +1941,54 @@ void Demo::prepare_framebuffers() {
         VERIFY(framebuffer_return.result == vk::Result::eSuccess);
         swapchain_image_resource.framebuffer = framebuffer_return.value;
     }
+}
+
+void check_vk_result(VkResult result) {
+    VERIFY(result == VK_SUCCESS);
+}
+
+void Demo::prepare_imgui() {
+    ImGui::CreateContext();
+    ImGui_ImplOSX_Init(view);
+
+    VkDescriptorPoolSize pool_sizes[] =
+    {
+        { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+    };
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_info.maxSets = 1000 * IM_ARRAYSIZE(pool_sizes);
+    pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes);
+    pool_info.pPoolSizes = pool_sizes;
+    VERIFY(vkCreateDescriptorPool(device, &pool_info, nullptr, &imgui_DescriptorPool) == VK_SUCCESS);
+    
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.Instance = inst;
+    init_info.PhysicalDevice = gpu;
+    init_info.Device = device;
+    init_info.QueueFamily = graphics_queue_family_index;
+    init_info.Queue = graphics_queue;
+    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.DescriptorPool = imgui_DescriptorPool;
+    init_info.Allocator = nullptr;
+    init_info.MinImageCount = (uint32_t)swapchain_image_resources.size();
+    init_info.ImageCount = (uint32_t)swapchain_image_resources.size();
+    init_info.CheckVkResultFn = check_vk_result;
+    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    ImGui_ImplVulkan_Init(&init_info, render_pass);
+    
+    ImGui_ImplVulkan_CreateFontsTexture(cmd);
 }
 
 vk::ShaderModule Demo::prepare_fs() {
@@ -3175,8 +3247,8 @@ int main(int argc, char **argv) {
 #elif defined(VK_USE_PLATFORM_METAL_EXT)
 
 // Global function invoked from NS or UI views and controllers to create demo
-static void demo_main(Demo &demo, void *caMetalLayer, int argc, const char *argv[]) {
-    demo.init(argc, (char **)argv);
+static void demo_main(Demo &demo, NSView* view, void *caMetalLayer, int argc, const char *argv[]) {
+    demo.init(argc, (char **)argv, view);
     demo.caMetalLayer = caMetalLayer;
     demo.init_vk_swapchain();
     demo.prepare();
